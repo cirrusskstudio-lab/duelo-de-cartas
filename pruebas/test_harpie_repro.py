@@ -1,6 +1,6 @@
 from playwright.sync_api import sync_playwright
 import sys
-F='file://'+(sys.argv[1] if len(sys.argv)>1 else '/home/claude/duelo-de-cartas.html')
+F='file://'+(sys.argv[1] if len(sys.argv)>1 else '/home/claude/duelo-de-cartas/docs/index.html')
 def S(i,n,func,sub='Normal',val=0): return {"id":i,"kind":"spell","name":n,"image":None,"finish":"normal","spell":{"subtype":sub,"effectText":"","func":func,"value":val}}
 def T(i,n,func,sub='Normal'): return {"id":i,"kind":"trap","name":n,"image":None,"finish":"normal","trap":{"subtype":sub,"cond":"En cualquier momento (libre)","effectText":"","func":func,"value":1}}
 def M(i,n): return {"id":i,"kind":"monster","name":n,"image":None,"finish":"normal","monster":{"attribute":"LUZ","race":"Guerrero","category":"Normal","level":4,"atk":1500,"def":1000,"materials":"","effectText":"","trigger":"none"}}
