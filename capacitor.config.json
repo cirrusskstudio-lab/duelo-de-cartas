@@ -1,0 +1,8 @@
+{
+  "appId": "com.sosinascorp.duelodecartas",
+  "appName": "Duelo de Cartas",
+  "webDir": "docs",
+  "android": {
+    "backgroundColor": "#000000"
+  }
+}

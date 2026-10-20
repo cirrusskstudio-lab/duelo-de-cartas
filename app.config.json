@@ -1,0 +1,4 @@
+{
+  "_nota": "Datos de la app que usa scripts/prepare-android.mjs. Sube versionName cuando publiques una versión nueva en Google Play.",
+  "versionName": "1.0.0"
+}

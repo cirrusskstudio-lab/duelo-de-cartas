@@ -1,0 +1,106 @@
+# Construye Duelo de Cartas para Android en los servidores de GitHub (no hace falta PC).
+# Cada vez que se sube un cambio a «main» (o al pulsar «Run workflow») genera:
+#   · DueloDeCartas-APK-prueba  → para instalar directo en el celular (también queda en «Releases»)
+#   · DueloDeCartas-AAB-GooglePlay → para subir a Play Console (firmado si hay llave de subida en los «secrets»)
+name: Construir app Android
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # para publicar el APK de prueba como «Release» (descarga directa)
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      KS_B64: ${{ secrets.UPLOAD_KEYSTORE_B64 }}
+      KS_PASS: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+      KEY_PASS: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+    steps:
+      - name: Descargar el proyecto
+        uses: actions/checkout@v5
+
+      - name: Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Instalar Capacitor
+        run: npm install --no-audit --no-fund
+
+      - name: Crear el proyecto Android
+        run: npx cap add android
+
+      - name: Ajustes de Duelo de Cartas (cámara, iconos, Android 16)
+        run: node scripts/prepare-android.mjs
+
+      - name: Copiar el juego y los plugins
+        run: npx cap sync android
+
+      - name: SDK de Android 16 (API 36)
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-36" > /dev/null
+
+      - name: APK de prueba
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+          mkdir -p ../salida
+          cp app/build/outputs/apk/debug/app-debug.apk ../salida/DueloDeCartas-prueba.apk
+
+      - name: AAB para Google Play
+        working-directory: android
+        run: |
+          ./gradlew bundleRelease --no-daemon --stacktrace
+          cp app/build/outputs/bundle/release/app-release.aab ../salida/DueloDeCartas.aab
+
+      - name: Firmar el AAB con la llave de subida
+        if: env.KS_B64 != ''
+        run: |
+          echo "$KS_B64" | base64 -d > upload.jks
+          jarsigner -keystore upload.jks -storepass "$KS_PASS" -keypass "$KEY_PASS" \
+            -sigalg SHA256withRSA -digestalg SHA-256 salida/DueloDeCartas.aab "$KEY_ALIAS"
+          jarsigner -verify salida/DueloDeCartas.aab
+          rm upload.jks
+
+      - name: Revisar el APK (permisos, versión, juego incluido)
+        run: |
+          AAPT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)aapt2
+          "$AAPT" dump badging salida/DueloDeCartas-prueba.apk | grep -E "^package:|^sdkVersion|^targetSdkVersion|^application-label:|uses-permission" || true
+          unzip -l salida/DueloDeCartas-prueba.apk | grep -E "assets/public/index.html|res/mipmap" | head -8 || true
+
+      - name: Publicar el APK de prueba (descarga directa desde el celular)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="prueba-${{ github.run_number }}"
+          cp salida/DueloDeCartas-prueba.apk "salida/DueloDeCartas-prueba-${{ github.run_number }}.apk"
+          gh release create "$TAG" "salida/DueloDeCartas-prueba-${{ github.run_number }}.apk" --prerelease \
+            --title "Duelo de Cartas prueba ${{ github.run_number }}" \
+            --notes "APK de prueba. Tócalo en el celular para descargarlo e instalarlo (permite «instalar apps de origen desconocido» si te lo pide)."
+
+      - name: Guardar APK de prueba
+        uses: actions/upload-artifact@v4
+        with:
+          name: DueloDeCartas-APK-prueba
+          path: salida/DueloDeCartas-prueba.apk
+
+      - name: Guardar AAB para Google Play
+        uses: actions/upload-artifact@v4
+        with:
+          name: DueloDeCartas-AAB-GooglePlay
+          path: salida/DueloDeCartas.aab

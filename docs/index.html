@@ -12,7 +12,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Duelo de Cartas">
 <script>/* App instalable (solo cuando se abre desde internet con https, p. ej. GitHub Pages) */
-if('serviceWorker' in navigator && location.protocol==='https:'){ window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); }); }</script>
+if('serviceWorker' in navigator && location.protocol==='https:' && location.hostname!=='localhost' && !window.Capacitor){ window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); }); }</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&display=swap" rel="stylesheet">
@@ -10903,5 +10903,23 @@ updateStorageInfo();
 dcRefreshAll();
 if(window.__KV && window.__KV.migrated && window.__KV.migrated.length) console.log('Datos migrados a IndexedDB:', window.__KV.migrated);
 </script>
+<script>/* App Android (Capacitor): el botón «Atrás» cierra la ventana abierta en vez de salir del juego. */
+(function(){
+  function setup(){
+    var C = window.Capacitor; if(!C || !C.Plugins || !C.Plugins.App) return false;
+    C.Plugins.App.addListener('backButton', function(){
+      var ovs = Array.prototype.filter.call(document.querySelectorAll('.overlay, .modal-backdrop'), function(o){ return getComputedStyle(o).display!=='none' && o.offsetWidth>0; });
+      var top = ovs[ovs.length-1];
+      if(top){
+        var x = top.querySelector('.close-x') || Array.prototype.find.call(top.querySelectorAll('button'), function(b){ return /cancelar|cerrar/i.test(b.textContent); });
+        if(x) x.click(); else top.remove();
+        return;
+      }
+      if(confirm('¿Salir de Duelo de Cartas?')) C.Plugins.App.exitApp();
+    });
+    return true;
+  }
+  if(!setup()) window.addEventListener('load', setup);
+})();</script>
 </body>
 </html>
