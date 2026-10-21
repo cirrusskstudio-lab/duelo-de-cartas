@@ -9052,7 +9052,8 @@ function fxPickFromList(p, title, ids, done, opts){
   if(!uniq.length){ done(null); return; }
   if(uniq.length===1 && !opts.allowSkip){ done(uniq[0]); return; }
   if(p.isAI || p!==duel.player || sbAutoPick){
-    const best = uniq.slice().sort((a,b)=>((findCardDef(b).monster||{}).atk||0)-((findCardDef(a).monster||{}).atk||0))[0];
+    const sc = opts.score || (c=>((c.monster||{}).atk||0));
+    const best = uniq.slice().sort((a,b)=>sc(findCardDef(b))-sc(findCardDef(a)))[0];
     done(best); return;
   }
   const options = uniq.map(id=>{ const c = findCardDef(id); return {label: c.name + (c.kind==='monster' ? ` (Nv ${c.monster.level||0} · ATK ${c.monster.atk||0})` : ''), id}; });
@@ -9175,7 +9176,7 @@ function ritualExodiaFuncs(p, opp, def, info, func, onDone){
           if(!id){ renderDuel(); onDone(); return; }
           const k = p.gy.indexOf(id); if(k>-1){ p.gy.splice(k,1); p.hand.push(id); taken++; logMsg(`🪖 ${def.name}: "${findCardDef(id).name}" vuelve del Cementerio a la mano.`); }
           step();
-        }, {allowSkip: taken>0, skipLabel:'Terminar'});
+        }, {allowSkip: taken>0, skipLabel:'Terminar', score: c=> isVictoryPieceDef(c) ? 100000 : ((c.monster||{}).atk||0)});
       };
       step();
       return true;
