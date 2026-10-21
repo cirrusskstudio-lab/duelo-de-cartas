@@ -4,3 +4,4 @@ salida/
 *.keystore
 *.jks
 .DS_Store
+!native/firma-de-prueba.jks

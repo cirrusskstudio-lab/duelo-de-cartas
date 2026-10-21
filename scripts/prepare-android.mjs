@@ -40,8 +40,17 @@ let g = read(gP);
 const code = Math.max(1, parseInt(process.env.GITHUB_RUN_NUMBER || '1', 10));
 must(/versionCode\s+\d+/.test(g) && /versionName\s+"[^"]*"/.test(g), 'No encontré versionCode/versionName en app/build.gradle.');
 g = g.replace(/versionCode\s+\d+/, `versionCode ${code}`).replace(/versionName\s+"[^"]*"/, `versionName "${cfg.versionName}"`);
+// Firma fija para los APK de prueba: así cada APK nuevo se instala ENCIMA del anterior (sin desinstalar
+// ni perder cartas). Sin esto, GitHub crea una llave distinta en cada compilación y Android rechaza la
+// actualización. Esta llave es solo para pruebas (es pública); Google Play usa la llave de subida de los secrets.
+fs.copyFileSync(path.join(ROOT, 'native/firma-de-prueba.jks'), path.join(A, 'app/firma-de-prueba.jks'));
+if (!g.includes('firma-de-prueba.jks')) {
+  const before = g;
+  g = g.replace(/\nandroid\s*\{/, `\nandroid {\n    signingConfigs {\n        debug {\n            storeFile file('firma-de-prueba.jks')\n            storePassword 'android'\n            keyAlias 'pruebas'\n            keyPassword 'android'\n        }\n    }`);
+  must(g !== before, 'No encontré el bloque android { } en app/build.gradle.');
+}
 write(gP, g);
-log(`app/build.gradle: versión ${cfg.versionName} (código ${code})`);
+log(`app/build.gradle: versión ${cfg.versionName} (código ${code}) y firma fija de prueba`);
 
 // 4) variables.gradle: Android 16 (API 36) para compilar y como objetivo (lo pide Google Play)
 const vP = path.join(A, 'variables.gradle');

@@ -82,6 +82,8 @@ jobs:
           AAPT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)aapt2
           "$AAPT" dump badging salida/DueloDeCartas-prueba.apk | grep -E "^package:|^sdkVersion|^targetSdkVersion|^application-label:|uses-permission" || true
           unzip -l salida/DueloDeCartas-prueba.apk | grep -E "assets/public/index.html|res/mipmap" | head -8 || true
+          SIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner
+          "$SIGNER" verify --print-certs salida/DueloDeCartas-prueba.apk | grep -q "Duelo de Cartas Pruebas" && echo "APK firmado con la firma fija de prueba (se actualiza encima)"
 
       - name: Publicar el APK de prueba (descarga directa desde el celular)
         env:
