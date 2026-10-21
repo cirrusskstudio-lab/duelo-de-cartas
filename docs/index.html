@@ -6514,14 +6514,14 @@ function resolveTriggerAction(p, def, trig){
   } else if(trig==='specialFromGYOnSummon'){
     const opts = p.gy.map((id,i)=>{ const d=findCardDef(id); return d && d.kind==='monster' ? {i,d} : null; }).filter(Boolean);
     if(opts.length){
-      const doPick = (o)=>attemptSpecialSummon(p, o.d.id, ()=>{ p.gy.splice(o.i,1); }, (ok)=>{ if(ok) logMsg(`Efecto de ${def.name}: Invocación Especial desde el Cementerio.`); renderDuel(); });
+      const doPick = (o)=>attemptSpecialSummon(p, o.d.id, ()=>{ p.gy.splice(o.i,1); }, (ok)=>{ if(ok){ logMsg(`Efecto de ${def.name}: Invocación Especial desde el Cementerio.`); applySummonTrigger(p, o.d); } renderDuel(); });
       if(p.isAI){ doPick(opts[0]); }
       else { openChoiceModal(`Efecto de ${def.name}: Invoca Especial 1 monstruo desde tu Cementerio`, opts.map(o=>({label:o.d.name, action:()=>doPick(o)})), opt=>opt.action()); }
     }
   } else if(trig==='specialFromHandOnSummon'){
     const opts = p.hand.map((id,i)=>{ const d=findCardDef(id); return d && d.kind==='monster' ? {i,d} : null; }).filter(Boolean);
     if(opts.length){
-      const doPick = (o)=>attemptSpecialSummon(p, o.d.id, ()=>{ p.hand.splice(o.i,1); }, (ok)=>{ if(ok) logMsg(`Efecto de ${def.name}: Invocación Especial desde la mano.`); renderDuel(); });
+      const doPick = (o)=>attemptSpecialSummon(p, o.d.id, ()=>{ p.hand.splice(o.i,1); }, (ok)=>{ if(ok){ logMsg(`Efecto de ${def.name}: Invocación Especial desde la mano.`); applySummonTrigger(p, o.d); } renderDuel(); });
       if(p.isAI){ doPick(opts[0]); }
       else { openChoiceModal(`Efecto de ${def.name}: Invoca Especial 1 monstruo desde tu mano`, opts.map(o=>({label:o.d.name, action:()=>doPick(o)})), opt=>opt.action()); }
     }
@@ -7112,7 +7112,7 @@ function resolveSpellTrapEffect(p, def, onDone){
       if(!id){ onDone(); return; }
       p.lp -= 800; BattleFX.lpChange(fxOwnerKey(p), 800);
       attemptSpecialSummon(p, id, ()=>{ const k=p.gy.indexOf(id); if(k>-1) p.gy.splice(k,1); },
-        (ok)=>{ if(ok) logMsg(`⚰️ ${def.name}: pagas 800 LP y revives a "${findCardDef(id).name}".`); checkLP(); renderDuel(); onDone(); });
+        (ok)=>{ if(ok){ logMsg(`⚰️ ${def.name}: pagas 800 LP y revives a "${findCardDef(id).name}".`); applySummonTrigger(p, findCardDef(id)); } checkLP(); renderDuel(); onDone(); });
     };
     if(p.isAI || p!==duel.player){ mons.sort((a,b)=>((findCardDef(b).monster||{}).atk||0)-((findCardDef(a).monster||{}).atk||0)); go(mons[0]); return; }
     openCriticalChoiceModal(`${def.name}: paga 800 LP y elige el monstruo a revivir`, mons.map(id=>({label:findCardDef(id).name, id})), o=>go(o.id), ()=>go(null));
@@ -7185,7 +7185,7 @@ function resolveSpellTrapEffect(p, def, onDone){
       attemptSpecialSummon(p, c.id, ()=>{
         const k = c.from.gy.indexOf(c.id); if(k>-1) c.from.gy.splice(k,1);
         if(netState.active && c.from===duel.ai) netSend({type:'oppMutate', op:'takeFromGY', cardId:c.id});
-      }, (ok)=>{ if(ok) logMsg(`✨ ${def.name}: revives a "${c.d.name}" desde el Cementerio ${c.from===p?'propio':'del rival'}.`); renderDuel(); onDone(); });
+      }, (ok)=>{ if(ok){ logMsg(`✨ ${def.name}: revives a "${c.d.name}" desde el Cementerio ${c.from===p?'propio':'del rival'}.`); applySummonTrigger(p, c.d); } renderDuel(); onDone(); });
     };
     if(p.isAI || p!==duel.player){ cands.sort((a,b)=>(b.d.monster.atk||0)-(a.d.monster.atk||0)); doRevive(cands[0]); return; }
     openCriticalChoiceModal(`${def.name}: elige el monstruo a revivir`, cands.map(c=>({label:`${c.d.name} (${c.from===p?'tu Cementerio':'Cementerio rival'})`, c})), o=>doRevive(o.c), ()=>doRevive(null));
@@ -7312,7 +7312,7 @@ function resolveSpellTrapEffect(p, def, onDone){
   }
   if(func==='specialFromGY'){
     const opts = p.gy.map((id,i)=>{ const d=findCardDef(id); return d && d.kind==='monster' ? {label:d.name, action:()=>{
-      attemptSpecialSummon(p, id, ()=>{ p.gy.splice(i,1); }, ()=>onDone());
+      attemptSpecialSummon(p, id, ()=>{ p.gy.splice(i,1); }, (ok)=>{ if(ok) applySummonTrigger(p, d); renderDuel(); onDone(); });
     }} : null; }).filter(Boolean);
     if(opts.length===0){ onDone(); return; }
     if(p.isAI){ opts[0].action(); return; }
@@ -8233,13 +8233,15 @@ function chooseMaterialsFor(p, extraIdx){
     grid.appendChild(b);
   });
   overlay.querySelector('#matConfirm').onclick = ()=>{
-    selected.forEach(i=>{ sendToGY(p, p.monsterZones[i].cardId); p.monsterZones[i]=null; });
+    selected.forEach(i=>{ const mid = p.monsterZones[i].cardId; handleEquipCleanupOnLeave(p, i); p.monsterZones[i]=null; sendToGY(p, mid); });
     const zi = p.monsterZones.findIndex(z=>z===null);
     p.monsterZones[zi] = emptyMonsterState(def.id,'attack',true);
     p.extra.splice(extraIdx,1);
     logMsg(`¡Invocación especial! ${def.name} sale del Extra Deck usando ${needed} materiales.`);
     overlay.remove();
+    applySummonTrigger(p, def);
     renderDuel();
+    setTimeout(()=>{ try{ BattleFX.summon(fxZoneEl('player','monster',zi), true); if(is3DActive()) trigger3DSummonParticles('player', zi); }catch(e){} }, 40);
   };
   overlay.querySelector('.close-x').onclick = ()=>overlay.remove();
 }
