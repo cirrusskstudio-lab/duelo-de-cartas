@@ -2346,13 +2346,46 @@ function exportBackup(){
     exportedAt: new Date().toISOString(),
     collection, decks, victorySets,
   };
-  const blob = new Blob([JSON.stringify(payload)], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
   const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-  a.href = url; a.download = `yugioh-maker-backup-${stamp}.json`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  saveTextFile(`yugioh-maker-backup-${stamp}.json`, JSON.stringify(payload), 'application/json', 'Copia de seguridad de Duelo de Cartas');
+}
+/* ---- Guardar archivos: en el navegador se descarga; en la app de Android (Capacitor) el WebView no
+   puede descargar, así que se guarda con el plugin Filesystem y se abre el menú «Compartir»
+   (Drive, WhatsApp, Archivos, correo...) para que el jugador elija dónde dejarlo. ---- */
+function capPlugin(name){
+  const C = window.Capacitor; if(!C) return null;
+  try{ return C.registerPlugin ? C.registerPlugin(name) : ((C.Plugins||{})[name]||null); }catch(e){ return (C.Plugins||{})[name]||null; }
+}
+function isNativeApp(){
+  const C = window.Capacitor;
+  try{ return !!(C && (C.isNativePlatform ? C.isNativePlatform() : (C.getPlatform && C.getPlatform()!=='web'))); }catch(e){ return false; }
+}
+async function saveTextFile(fileName, text, mime, label){
+  if(isNativeApp()){
+    const FS = capPlugin('Filesystem'), SH = capPlugin('Share');
+    let docsOk = false;
+    try{ await FS.writeFile({ path:'DueloDeCartas/'+fileName, data:text, directory:'DOCUMENTS', encoding:'utf8', recursive:true }); docsOk = true; }catch(e){ console.warn('No se pudo guardar en Documentos:', e); }
+    try{
+      const w = await FS.writeFile({ path:fileName, data:text, directory:'CACHE', encoding:'utf8' });
+      await SH.share({ title:fileName, text:label||fileName, files:[w.uri], dialogTitle:'Guarda o envía tu archivo' });
+      if(docsOk) alert(`✅ Listo. También quedó una copia en tu celular: Documentos › DueloDeCartas › ${fileName}`);
+      return true;
+    }catch(e){
+      const msg = String((e && e.message) || e || '');
+      if(/cancel/i.test(msg)){ if(docsOk) alert(`✅ La copia quedó guardada en tu celular: Documentos › DueloDeCartas › ${fileName}`); return docsOk; }
+      console.error('No se pudo compartir el archivo:', e);
+      if(docsOk){ alert(`✅ Copia guardada en tu celular: Documentos › DueloDeCartas › ${fileName}`); return true; }
+      alert('No se pudo guardar el archivo en el celular: '+msg);
+      return false;
+    }
+  }
+  try{
+    const url = URL.createObjectURL(new Blob([text], {type: mime||'application/octet-stream'}));
+    const a = document.createElement('a'); a.href = url; a.download = fileName;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+    return true;
+  }catch(e){ console.error(e); return false; }
 }
 document.getElementById('exportBackupBtn').addEventListener('click', exportBackup);
 document.getElementById('importBackupBtn').addEventListener('click', ()=>{
@@ -5922,7 +5955,7 @@ document.getElementById('deckExportBtn').addEventListener('click', ()=>{
   const d = decks.find(x=>x.id===currentDeckId); if(!d) return;
   const txt = exportDeckList(d);
   try{ navigator.clipboard && navigator.clipboard.writeText(txt); }catch(e){}
-  try{ const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], {type:'text/plain'})); a.download = (d.name||'mazo').replace(/[^\w\- ]+/g,'_')+'.txt'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000); }catch(e){}
+  try{ saveTextFile((d.name||'mazo').replace(/[^\w\- ]+/g,'_')+'.txt', txt, 'text/plain', 'Lista del mazo '+(d.name||'')); }catch(e){}
   alert('📤 Lista del mazo descargada como .txt (y copiada al portapapeles si tu navegador lo permite).');
 });
 document.getElementById('duel_mode').addEventListener('change', dcUpdateDuelInfo);
@@ -10908,8 +10941,10 @@ if(window.__KV && window.__KV.migrated && window.__KV.migrated.length) console.l
 <script>/* App Android (Capacitor): el botón «Atrás» cierra la ventana abierta en vez de salir del juego. */
 (function(){
   function setup(){
-    var C = window.Capacitor; if(!C || !C.Plugins || !C.Plugins.App) return false;
-    C.Plugins.App.addListener('backButton', function(){
+    var C = window.Capacitor; if(!C) return false;
+    var App = null; try{ App = C.registerPlugin ? C.registerPlugin('App') : (C.Plugins||{}).App; }catch(e){ App = (C.Plugins||{}).App; }
+    if(!App || !(C.isNativePlatform ? C.isNativePlatform() : true)) return false;
+    App.addListener('backButton', function(){
       var ovs = Array.prototype.filter.call(document.querySelectorAll('.overlay, .modal-backdrop'), function(o){ return getComputedStyle(o).display!=='none' && o.offsetWidth>0; });
       var top = ovs[ovs.length-1];
       if(top){
@@ -10917,7 +10952,7 @@ if(window.__KV && window.__KV.migrated && window.__KV.migrated.length) console.l
         if(x) x.click(); else top.remove();
         return;
       }
-      if(confirm('¿Salir de Duelo de Cartas?')) C.Plugins.App.exitApp();
+      if(confirm('¿Salir de Duelo de Cartas?')) App.exitApp();
     });
     return true;
   }

@@ -28,9 +28,11 @@ const add = [];
 if (!man.includes('android.permission.CAMERA"')) add.push('    <uses-permission android:name="android.permission.CAMERA" />');
 if (!man.includes('android.hardware.camera"')) add.push('    <uses-feature android:name="android.hardware.camera" android:required="false" />');
 if (!man.includes('android.permission.INTERNET"')) add.push('    <uses-permission android:name="android.permission.INTERNET" />');
-if (add.length) { const before = man; man = man.replace(/(\n\s*<application\b)/, '\n    <!-- Multijugador: internet y cámara para el QR -->\n' + add.join('\n') + '$1'); must(man !== before, 'No encontré <application> en el AndroidManifest.'); }
+if (!man.includes('android.permission.WRITE_EXTERNAL_STORAGE"')) add.push('    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />');
+if (!man.includes('android.permission.READ_EXTERNAL_STORAGE"')) add.push('    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />');
+if (add.length) { const before = man; man = man.replace(/(\n\s*<application\b)/, '\n    <!-- Multijugador (internet y cámara para el QR) y guardar copias de seguridad -->\n' + add.join('\n') + '$1'); must(man !== before, 'No encontré <application> en el AndroidManifest.'); }
 write(manP, man);
-log('AndroidManifest: internet y cámara');
+log('AndroidManifest: internet, cámara y almacenamiento (Android 10 o menos)');
 
 // 3) app/build.gradle: versión
 const gP = path.join(A, 'app/build.gradle');
