@@ -67,7 +67,7 @@ with sync_playwright() as p:
     setup(hand=['cs_espadas'], aM=['cs_guardian'])
     cast('cs_espadas'); lp=ev("duel.player.lp")
     ev("duel.activePlayer='ai'; duel.phase='Battle'; aiBattlePhase(()=>{window._bp=1})"); pg.wait_for_timeout(1200)
-    check('C6) Espadas: el rival no puede atacar por 3 turnos', ev("duel.ai.swordsLockTurns")==3 and ev("duel.player.lp")==lp, [ev("duel.ai.swordsLockTurns"), ev("duel.log.slice(0,3)")])
+    check('C6) Espadas: el rival no puede atacar por 3 turnos', ev("swordsLockOn(duel.ai)")==3 and ev("duel.player.lp")==lp, [ev("swordsLockOn(duel.ai)"), ev("duel.log.slice(0,3)")])
     # C7 Plan B: Coloso Necrótico
     setup(hand=['cs_necross','cs_contrato'], gy=['cs_cabeza','cs_brazod','cs_brazoi','cs_piernad','cs_piernai'])
     cast('cs_contrato'); pg.wait_for_timeout(1200)

@@ -110,7 +110,7 @@ with sync_playwright() as p:
         pg.wait_for_function("!document.getElementById('sb_runTestsBtn').disabled && /pruebas correctas/.test(document.getElementById('sb_testSummary').textContent)", timeout=180000)
         return pg.inner_text('#sb_testSummary')
     on=run_internal(); pg.evaluate("dcCfg.enabled=false; saveDcConfig();"); off=run_internal(); pg.evaluate("dcCfg.enabled=true; saveDcConfig();")
-    check('9) Con DC activado o desactivado pasan las 103 pruebas de reglas', '119/119' in on and '119/119' in off, (on, off))
+    check('9) Con DC activado o desactivado pasan las 103 pruebas de reglas', '123/123' in on and '123/123' in off, (on, off))
     before={c['id']:{k:v for k,v in c.items() if k not in ('deckCost','dcManual')} for c in cards+auto}
     after={c['id']:c for c in pg.evaluate("collection.map(c=>{ const x=JSON.parse(JSON.stringify(c)); delete x.deckCost; delete x.dcManual; return x; })")}
     check('10) Efectos, ATK y DEF intactos', all(json.dumps(before[k],sort_keys=True)==json.dumps(after[k],sort_keys=True) for k in before))

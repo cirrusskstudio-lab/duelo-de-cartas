@@ -1639,6 +1639,8 @@ input[type="checkbox"]:focus{box-shadow:none;}
                 <option value="royalDecree">👑 (Continua) Mientras esté boca arriba, ninguna otra Trampa se puede activar (Decreto Real)</option>
                 <option value="waboku">🛡️ Este turno tus monstruos no se destruyen en batalla y no recibes daño de batalla (Waboku)</option>
                 <option value="threateningRoar">🦁 El rival no puede declarar ataques este turno (Rugido Amenazante)</option>
+                <option value="enchantedJavelin">🗡️ Cuando te atacan: ganas LP igual al ATK del monstruo atacante (Jabalina Encantada)</option>
+                <option value="shiftTarget">🔀 Cuando atacan a uno de tus monstruos: el ataque se desvía a OTRO monstruo tuyo que elijas (Cambio de Objetivo)</option>
                 <option value="backupSoldier">🪖 Si tienes 5+ monstruos en tu Cementerio: añade hasta 3 con 1500 ATK o menos a tu mano (Soldado de Refuerzo)</option>
               </select>
             </div>
@@ -5117,6 +5119,40 @@ function resolveChainLinksSeq(links, tr, done){
   step();
 }
 /* Dónde queda la carta después de resolverse: al Cementerio, boca arriba (Continua/Equipo) o en la Zona de Campo. */
+/* ---- Espadas Reveladoras ----
+   El bloqueo depende de que la carta siga BOCA ARRIBA en el campo de quien la activó (como en el juego real):
+   si la destruyen o la regresan a la mano, el rival vuelve a poder atacar. Cuenta los turnos del rival
+   en la propia carta (swordsTurns) y se destruye sola al terminar el último. Funciona igual en red. */
+function isSwordsDef(d){ return !!(d && d.kind==='spell' && d.spell && d.spell.swords && d.spell.swords.enabled); }
+function swordsFlipAll(target){
+  target.monsterZones.forEach(z=>{ if(z && !z.faceup){ z.faceup = true; try{ applyFlipTrigger(target, z, findCardDef(z.cardId)); }catch(e){} } });
+}
+function swordsLockOn(p){
+  if(!duel || !p) return 0;
+  const opp = p===duel.player ? duel.ai : duel.player;
+  let t = 0;
+  (opp.stZones||[]).forEach(z=>{ if(z && z.faceup && isSwordsDef(findCardDef(z.cardId))){ const left = (z.swordsTurns===undefined || z.swordsTurns===null) ? ((findCardDef(z.cardId).spell.swords.turns)||3) : z.swordsTurns; if(left>0) t = Math.max(t, left); } });
+  return t;
+}
+function swordsTickEndOfTurn(endingPlayer){
+  const sides = netState.active ? [duel.player] : [duel.player, duel.ai];
+  sides.forEach(q=>{
+    if(q===endingPlayer) return;            // solo cuentan los turnos del RIVAL de quien activó las Espadas
+    q.stZones.forEach((z,i)=>{
+      if(!z || !z.faceup) return;
+      const d = findCardDef(z.cardId); if(!isSwordsDef(d)) return;
+      if(z.swordsTurns===undefined || z.swordsTurns===null) z.swordsTurns = d.spell.swords.turns||3;
+      z.swordsTurns -= 1;
+      if(z.swordsTurns<=0){
+        try{ BattleFX.destroy(fxZoneEl(fxOwnerKey(q),'st',i)); }catch(e){}
+        q.stZones[i] = null; sendToGY(q, z.cardId);
+        logMsg(`🗡️ ${d.name} se desvanece: ${q===duel.player?'tu rival':'tú'} ya puede${q===duel.player?'':'s'} atacar otra vez.`);
+      } else {
+        logMsg(`🗡️ ${d.name}: le quedan ${z.swordsTurns} turno(s) a ${q===duel.player?'tu rival':'ti'} sin poder atacar.`);
+      }
+    });
+  });
+}
 function placeResolvedChainCard(owner, def, link){
   if(link.stays){ return; } // continua reutilizada: nunca salió del campo
         const subtype = def.trap ? def.trap.subtype : def.spell.subtype;
@@ -5148,18 +5184,21 @@ function placeResolvedChainCard(owner, def, link){
   } else if(subtype==='Continua'){
     const zi = owner.stZones.findIndex(z=>z===null);
     if(zi>-1){
-      owner.stZones[zi] = { cardId:link.cardId, faceup:true, setThisTurn:false };
+      // Activarla ya cuenta como su uso de este turno: no se puede volver a usar hasta el siguiente.
+      owner.stZones[zi] = { cardId:link.cardId, faceup:true, setThisTurn:false, usedTurn: turnKey() };
       if(def.spell && def.spell.swords && def.spell.swords.enabled){
         const swordsOpp = owner===duel.player ? duel.ai : duel.player;
-        swordsOpp.monsterZones.forEach((z)=>{
-          if(z && !z.faceup){
-            const zdef = findCardDef(z.cardId);
-            z.faceup = true;
-            applyFlipTrigger(swordsOpp, z, zdef);
-          }
-        });
-        swordsOpp.swordsLockTurns = def.spell.swords.turns||3;
-        logMsg(`🗡️ ¡Espadas Reveladoras! Se voltean boca arriba los monstruos boca abajo de ${swordsOpp.name}, que no podrán atacar durante ${swordsOpp.swordsLockTurns} de sus turnos.`);
+        const turns = def.spell.swords.turns||3;
+        owner.stZones[zi].swordsTurns = turns;   // el bloqueo vive EN la carta: si la destruyen, se acaba
+        if(netState.active && swordsOpp===duel.ai){
+          // Los monstruos del rival se voltean en SU dispositivo (ahí se activan sus efectos de Volteo).
+          netSend({type:'oppMutate', op:'flipAllFaceup'});
+          swordsOpp.monsterZones.forEach(z=>{ if(z && !z.faceup) z.faceup = true; });
+        } else {
+          swordsFlipAll(swordsOpp);
+        }
+        logMsg(`🗡️ ¡${def.name}! Se voltean boca arriba los monstruos boca abajo de ${swordsOpp.name}, que no podrán atacar durante ${turns} de sus turnos.`);
+        try{ fxBanner('🗡️ ' + def.name, `${swordsOpp.name} no puede atacar (${turns} turnos)`, 'gold'); }catch(e){}
       }
     }
     else sendToGY(owner, link.cardId);
@@ -5214,7 +5253,8 @@ function attemptSpecialSummon(p, cardId, removeFromSource, onResult){
   if(sbw){ if(p===duel.player && !p.isAI && !sbAutoPick) alert(sbw); else logMsg(sbw); if(onResult) onResult(false); return; }
   const zoneIdx = p.monsterZones.findIndex(z=>z===null);
   if(zoneIdx===-1){ alert('No tienes zonas de monstruo libres.'); if(onResult) onResult(false); return; }
-  if(netState.active && p===duel.player && (netState.awaitingAttack || netState.awaitingSpecialSummonResponse || (duel.chainLinks && duel.chainLinks.length))){
+  // Mientras se RESUELVE una Cadena (p. ej. Monstruo Renacido), la Invocación es parte de esa resolución: no hay que esperar.
+  if(netState.active && p===duel.player && (netState.awaitingAttack || netState.awaitingSpecialSummonResponse || (duel.chainLinks && duel.chainLinks.length && !duel._chainResolving))){
     alert('Espera la respuesta de tu rival a tu acción anterior.'); if(onResult) onResult(false); return;
   }
   const proceed = (negated)=>{
@@ -5490,7 +5530,7 @@ const DC_ST_FUNC = {
   destroyAttacker:()=>16, negateAttack:()=>7, toDefense:()=>5, negateSpell:()=>20, negateSpecialSummon:()=>18, destroySummoned:()=>20,
   mirrorForce:()=>40, magicCylinder:()=>24, ringOfDestruction:()=>18, discardToDestroy:()=>18, generateToken:()=>0,
   giantTrunade:()=>18, lightningVortex:()=>30, reinforcement:()=>10, shrinkTarget:()=>12, doubleSummon:()=>8, torrentialTribute:()=>34, bottomlessHole:()=>22, solemnJudgment:()=>26, dimensionalPrison:()=>20, royalDecree:()=>24,
-  prePreparationOfRites:()=>16, preparationOfRites:()=>14, advancedRitualArt:()=>14, contractWithExodia:()=>12, searchVictoryPiece:()=>14, cardOfSanctity:()=>16, waboku:()=>10, threateningRoar:()=>10, backupSoldier:()=>14 };
+  prePreparationOfRites:()=>16, preparationOfRites:()=>14, advancedRitualArt:()=>14, contractWithExodia:()=>12, searchVictoryPiece:()=>14, cardOfSanctity:()=>16, waboku:()=>10, threateningRoar:()=>10, backupSoldier:()=>14, enchantedJavelin:()=>12, shiftTarget:()=>14 };
 const DC_FUNC_LABEL = { destroyTarget:'Destruye 1 carta', draw:'Roba cartas', gainlp:'Gana LP', boostatk:'Sube ATK', boostdef:'Sube DEF', specialFromGY:'Revive de tu Cementerio', reviveAny:'Revive de cualquier Cementerio',
   directDamage:'Daño directo', coinFlip:'Moneda', diceRoll:'Dado', negateNegation:'Protege de anulaciones', lpLevelSteal:'Roba un monstruo según LP', destroyAllOppMonsters:'Destruye TODOS los monstruos rivales',
   destroyAllMonsters:'Destruye todos los monstruos', destroyAllOppST:'Destruye TODAS las Mágicas/Trampas rivales', destroyAllST:'Destruye todas las Mágicas/Trampas', drawThenDiscard:'Roba y descarta',
@@ -5502,7 +5542,7 @@ const DC_FUNC_LABEL = { destroyTarget:'Destruye 1 carta', draw:'Roba cartas', ga
   giantTrunade:'Devuelve todas las Mágicas/Trampas a la mano', lightningVortex:'Destruye los monstruos boca arriba rivales', reinforcement:'Busca un monstruo', shrinkTarget:'Reduce a la mitad el ATK rival',
   doubleSummon:'Una Invocación Normal más', torrentialTribute:'Destruye TODOS los monstruos al invocar', bottomlessHole:'Destierra lo invocado', solemnJudgment:'Anula una invocación (paga LP)', dimensionalPrison:'Destierra al atacante', royalDecree:'Bloquea las demás Trampas',
   prePreparationOfRites:'Busca Mágica de Ritual + su monstruo', preparationOfRites:'Busca Monstruo Ritual + recupera su Mágica', advancedRitualArt:'Ritual con Normales del Deck', contractWithExodia:'Contrato con Exodia (Necross)',
-  searchVictoryPiece:'Busca Pieza de Victoria', cardOfSanctity:'Ambos roban hasta 6', waboku:'Sin daño ni destrucción en batalla', threateningRoar:'El rival no puede atacar', backupSoldier:'Recupera 3 monstruos débiles' };
+  searchVictoryPiece:'Busca Pieza de Victoria', cardOfSanctity:'Ambos roban hasta 6', waboku:'Sin daño ni destrucción en batalla', threateningRoar:'El rival no puede atacar', backupSoldier:'Recupera 3 monstruos débiles', enchantedJavelin:'Gana LP = ATK del atacante', shiftTarget:'Desvía el ataque a otro monstruo tuyo' };
 const DC_GY = { draw:6, gainLp:2, drainLp:3, specialSummonSelf:12, addTargetToHand:8, destroyOppST:8, generateToken:0, searchAtkLow:10, searchDefLow:9, searchRitual:10, searchVictoryPiece:11, summonAtkLowFromDeck:12 };
 const DC_REPEAT_FUNCS = ['draw','gainlp','directDamage','coinFlip','diceRoll','generateToken'];
 function dcTokenValue(td){
@@ -6384,10 +6424,7 @@ function finishTurn(fromNetwork){
   if(!(netState.active && endingPlayer===duel.ai)) processSelfDestructAtEnd(endingPlayer);
   try{ processContinuousEnd(); }catch(e){ console.error(e); }
   endingPlayer.stZones.forEach(s=>{ if(s) s.setThisTurn=false; });
-  if(endingPlayer.swordsLockTurns && endingPlayer.swordsLockTurns>0){
-    endingPlayer.swordsLockTurns -= 1;
-    logMsg(`🗡️ Espadas Reveladoras: a ${endingPlayer.name} le quedan ${endingPlayer.swordsLockTurns} turno(s) sin poder atacar.`);
-  }
+  try{ swordsTickEndOfTurn(endingPlayer); }catch(e){ console.error(e); }
   if(netState.active && !fromNetwork){ netSend({type:'turnEnd'}); }
   duel.activePlayer = duel.activePlayer==='player' ? 'ai' : 'player';
   if(duel.activePlayer==='player') duel.turn++;
@@ -6917,7 +6954,11 @@ function tryActivateSetST(owner, zoneIdx){
   if(!z) return;
   const def = findCardDef(z.cardId);
   if(!def) return;
-  if(z.setThisTurn && p===activePl() && p===duel.player){ alert('No puedes activar una carta el mismo turno en que la colocaste.'); return; }
+  // Regla real: solo las Trampas y las Mágicas Rápidas esperan un turno después de colocarse. Las demás Mágicas
+  // (Normal, Continua, Ritual, Polimerización...) se pueden activar el mismo turno, en tu Fase Principal.
+  const waitsATurn = def.kind==='trap' || (def.kind==='spell' && def.spell && def.spell.subtype==='Rápida');
+  if(z.setThisTurn && waitsATurn && p===activePl() && p===duel.player){ alert('No puedes activar una Trampa o Mágica Rápida el mismo turno en que la colocaste.'); return; }
+  if(!z.faceup && def.kind==='spell' && !waitsATurn && (p!==activePl() || (duel.phase!=='Main1' && duel.phase!=='Main2'))){ if(p===duel.player && !p.isAI && !sbAutoPick) alert('Esta Mágica solo se puede activar en tu Fase Principal.'); return; }
   if(def.kind==='trap' && trapsLocked()){ if(p===duel.player && !p.isAI) alert('🚫 No se pueden activar Trampas: hay un monstruo boca arriba que lo impide (estilo Jinzo).'); else logMsg('🚫 Las Trampas no se pueden activar ahora (estilo Jinzo).'); return; }
   if(duel.chainLinks && duel.chainLinks.length){ if(!chainRecoverOnBlockedAction()) alert('Ya hay una Cadena en curso. Esperando la respuesta de tu rival…'); return; }
   const blockWhy = spellActivationBlockReason(p, def);
@@ -7143,8 +7184,7 @@ function resolveSpellTrapEffect(p, def, onDone){
     if(!mons.length || !p.monsterZones.some(z=>z===null) || p.lp<=800){ logMsg(`${def.name}: no se puede usar (sin monstruos en tu Cementerio, sin zonas libres o sin LP suficientes).`); onDone(); return; }
     const go = (id)=>{
       if(!id){ onDone(); return; }
-      p.lp -= 800; BattleFX.lpChange(fxOwnerKey(p), 800);
-      attemptSpecialSummon(p, id, ()=>{ const k=p.gy.indexOf(id); if(k>-1) p.gy.splice(k,1); },
+      attemptSpecialSummon(p, id, ()=>{ const k=p.gy.indexOf(id); if(k>-1) p.gy.splice(k,1); p.lp -= 800; BattleFX.lpChange(fxOwnerKey(p), 800); },
         (ok)=>{ if(ok){ logMsg(`⚰️ ${def.name}: pagas 800 LP y revives a "${findCardDef(id).name}".`); applySummonTrigger(p, findCardDef(id)); } checkLP(); renderDuel(); onDone(); });
     };
     if(p.isAI || p!==duel.player){ mons.sort((a,b)=>((findCardDef(b).monster||{}).atk||0)-((findCardDef(a).monster||{}).atk||0)); go(mons[0]); return; }
@@ -7603,7 +7643,7 @@ function tryAttack(attackerOwner, attackerIdx){
   const zDefAtk = findCardDef(z.cardId);
   if(zDefAtk && zDefAtk.monster && zDefAtk.monster.drawback==='cannotAttack' && errataApplies(z, zDefAtk)){ alert(`${zDefAtk.name} no puede declarar ataques (penalización de su Invocación Especial).`); return; }
   if(p._roarLock){ alert('🦁 Rugido Amenazante: no puedes declarar ataques este turno.'); return; }
-  if(p.swordsLockTurns && p.swordsLockTurns>0){ alert(`🗡️ Tus monstruos no pueden atacar por Espadas Reveladoras (te quedan ${p.swordsLockTurns} turno(s)).`); return; }
+  { const sl = swordsLockOn(p); if(sl>0){ alert(`🗡️ Tus monstruos no pueden atacar: tu rival tiene unas Espadas Reveladoras boca arriba (te quedan ${sl} turno(s)).`); return; } }
   if(netState.active && (netState.awaitingAttack || netState.awaitingSpecialSummonResponse || (duel.chainLinks && duel.chainLinks.length))){ if(!chainRecoverOnBlockedAction()) alert('Espera la respuesta de tu rival.'); return; }
   const opp = otherPl();
   const targets = opp.monsterZones.map((zz,i)=>zz?i:null).filter(i=>i!==null);
@@ -7639,14 +7679,16 @@ function performAttack(attackerOwner, attackerIdx, defenderIdx, onComplete){
   const az = p.monsterZones[attackerIdx];
   if(!az){ if(onComplete) onComplete(); return; }
   const adef = findCardDef(az.cardId) || {name:'Monstruo desconocido', monster:{atk:0,def:0,noBattleDestroy:false}};
-  const hasTarget = defenderIdx!==null && defenderIdx!==undefined && opp.monsterZones[defenderIdx];
+  let hasTarget = defenderIdx!==null && defenderIdx!==undefined && opp.monsterZones[defenderIdx];
   logMsg(`${p===duel.player?'Atacas':'Tu rival ataca'} con ${adef.name}${hasTarget? ' a '+(opp.monsterZones[defenderIdx].faceup?(findCardDef(opp.monsterZones[defenderIdx].cardId)||{name:'???'}).name:'una carta boca abajo') : ' directamente'}.`);
 
   duel._pendingAttack = { attackerOwner:p, attackerIdx, defenderIdx, cancelled:false };
   const ownerKey = p===duel.player ? 'player' : 'ai';
   const oppKey = opp===duel.player ? 'player' : 'ai';
-  maybeOfferOpponentTrap(opp, ()=>maybeOfferHandBattle(opp, p, attackerIdx, defenderIdx, ()=>{
+  const syncTarget = ()=>{ const pa = duel._pendingAttack; if(pa && pa.defenderIdx!==defenderIdx){ defenderIdx = pa.defenderIdx; hasTarget = defenderIdx!==null && defenderIdx!==undefined && opp.monsterZones[defenderIdx]; } };
+  maybeOfferOpponentTrap(opp, ()=>{ syncTarget(); maybeOfferHandBattle(opp, p, attackerIdx, defenderIdx, ()=>{
     const pend = duel._pendingAttack;
+    syncTarget();
     if(!pend){ if(onComplete) onComplete(); return; }
     az.attackedThisTurn = true;
     if(pend.cancelled){
@@ -7721,7 +7763,7 @@ function performAttack(attackerOwner, attackerIdx, defenderIdx, onComplete){
     checkLP();
     renderDuel();
     if(onComplete) onComplete();
-  }));
+  }); });
 }
 
 function activateBattleResponseNow(owner, idx, cont){
@@ -7735,7 +7777,7 @@ function activateBattleResponseNow(owner, idx, cont){
   const finish = ()=>{
     if(finished) return; finished = true;
     const sub = def.kind==='trap' ? def.trap.subtype : def.spell.subtype;
-    if(sub==='Continua'){ const zi = owner.stZones.findIndex(s=>s===null); if(zi>-1) owner.stZones[zi] = {cardId:z.cardId, faceup:true, setThisTurn:false}; else sendToGY(owner, z.cardId); }
+    if(sub==='Continua'){ const zi = owner.stZones.findIndex(s=>s===null); if(zi>-1) owner.stZones[zi] = {cardId:z.cardId, faceup:true, setThisTurn:false, usedTurn: turnKey()}; else sendToGY(owner, z.cardId); }
     else sendToGY(owner, z.cardId);
     renderDuel(); cont();
   };
@@ -7802,11 +7844,32 @@ function matNorm(s){ return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,''
 function matHasWord(text, word){ return new RegExp('(^|[^a-z0-9])'+word.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'([^a-z0-9]|$)').test(text); }
 
 /* Convierte el texto de materiales en "huecos": [{count, name?|race?|attribute?|category?|minLevel?|maxLevel?|level?, label}] */
+const MAT_RACE_WORDS = new Set(MAT_RACES.flatMap(r=>matNorm(r).split(' ')));
+function matSingularWord(w){
+  if(MAT_RACE_WORDS.has(w)) return w;
+  const tries = [w.replace(/es$/,''), w.replace(/s$/,''), w.replace(/as$/,'o'), w.replace(/a$/,'o'), w.replace(/os$/,'o')];
+  for(const t of tries){ if(t!==w && MAT_RACE_WORDS.has(t)) return t; }
+  if(w==='monstruos') return 'monstruos';
+  return w;
+}
+function matExactNameExists(n){
+  try{ n = String(n).replace(/^🧪\s*/,''); return (collection||[]).some(c=>matNorm(c.name).replace(/^🧪\s*/,'')===n) || Object.values(networkCardCache||{}).some(c=>c && matNorm(c.name)===n) || Object.values(sandboxCardRegistry||{}).some(c=>c && matNorm(c.name).replace(/^🧪\s*/,'')===n); }catch(e){ return false; }
+}
+function matSingular(n){ return String(n||'').split(' ').map(matSingularWord).join(' '); }
+function matLooksLikeMaterial(part){
+  const n = matSingular(matNorm(part));
+  if(/^\d/.test(n) || /^(un|una)\s/.test(n) || /(^|\s)monstruos?(\s|$)/.test(n) || /cualquier/.test(n)) return true;
+  return MAT_RACES.some(r=>n===matNorm(r)) || Object.keys(MAT_ATTRS).some(a=>n===a);
+}
 function parseMaterialSpec(text, defaultCount){
   const raw = String(text||'').trim();
   const fallback = [{count: defaultCount||2, any:true, label:`${defaultCount||2} monstruos cualquiera`}];
   if(!raw) return { slots: fallback, isDefault:true };
-  const parts = raw.split(/(?<!\d)\s*\+\s*/).map(s=>s.trim()).filter(Boolean);
+  const parts = [];
+  raw.split(/(?<!\d)\s*\+\s*/).map(s=>s.trim()).filter(Boolean).forEach(seg=>{
+    const sub = seg.split(/\s*,\s*|\s+y\s+|\s+e\s+/i).map(s=>s.trim()).filter(Boolean);
+    if(sub.length>1 && sub.every(matLooksLikeMaterial)) parts.push(...sub); else parts.push(seg);
+  });
   const slots = [];
   parts.forEach(part=>{
     let count = 1, rest = part;
@@ -7815,7 +7878,7 @@ function parseMaterialSpec(text, defaultCount){
     m = rest.match(/^(.*?)\s*[x×]\s*(\d+)$/i);
     if(m){ count = Math.max(1, +m[2]); rest = m[1]; }
     const clean = rest.replace(/^[«"“]|[»"”]$/g,'').trim();
-    const n = matNorm(clean);
+    const n = matSingular(matNorm(clean));
     const raceHit = MAT_RACES.find(r=>matHasWord(n, matNorm(r)));
     const attrHit = Object.keys(MAT_ATTRS).find(a=>matHasWord(n, a));
     const isGeneric = /(^|\s)monstruos?(\s|$)/.test(n) || /cualquier/.test(n) ||
@@ -7843,7 +7906,12 @@ function parseMaterialSpec(text, defaultCount){
 function materialMatches(slot, def){
   if(!def || def.kind!=='monster') return false;
   const m = def.monster||{};
-  if(slot.name) return matNorm(def.name).replace(/^🧪\s*/,'')===slot.name || matNorm(def.name)===slot.name;
+  if(slot.name){
+    const raw = matNorm(def.name), nn = raw.replace(/^🧪\s*/,''), want = String(slot.name).replace(/^🧪\s*/,'');
+    if(raw===slot.name || nn===want) return true;
+    // Si ninguna carta se llama EXACTAMENTE así, acepta un nombre que lo contenga («Dragón Blanco» → «Dragón Blanco de Ojos Azules»).
+    return matHasWord(nn, want) && !matExactNameExists(want);
+  }
   if(slot.race && m.race!==slot.race) return false;
   if(slot.attribute && m.attribute!==slot.attribute) return false;
   if(slot.category && m.category!==slot.category) return false;
@@ -8226,33 +8294,66 @@ function openExtraDeckModal(){
     if(d.monster.category==='Fusión'){
       return {label:`🌀 ${d.name} (Fusión — requiere Polimerización · ${d.monster.materials||'2 monstruos cualquiera'})`, action:()=>{
         const si = findEnablerSpellInHand(p, d);
-        if(si===-1){ alert(`Los Monstruos de Fusión solo se Invocan activando "Polimerización".\n\n${d.name} necesita: ${d.monster.materials||'2 monstruos cualquiera'} (de tu mano y/o campo).\n\nNo tienes una Polimerización en la mano.`); return; }
+        if(si===-1){
+          // También sirve una Polimerización COLOCADA boca abajo en tu campo.
+          const zi = p.stZones.findIndex(z=>z && !z.faceup && isPolymerizationDef(findCardDef(z.cardId)));
+          if(zi>-1){
+            const sd = findCardDef(p.stZones[zi].cardId), why = spellActivationBlockReason(p, sd);
+            if(why){ alert(why); return; }
+            if(confirm(`¿Activar tu "${sd.name}" colocada para hacer una Invocación por Fusión?`)) tryActivateSetST(p, zi);
+            return;
+          }
+          alert(`Los Monstruos de Fusión solo se Invocan activando "Polimerización".\n\n${d.name} necesita: ${d.monster.materials||'2 monstruos cualquiera'} (de tu mano y/o campo).\n\nNo tienes una Polimerización en la mano ni colocada.`); return;
+        }
         const sd = findCardDef(p.hand[si]);
         const why = spellActivationBlockReason(p, sd);
         if(why){ alert(why); return; }
         if(confirm(`¿Activar "${sd.name}" de tu mano para hacer una Invocación por Fusión?`)) tryActivateFromHandSpell(si);
       }};
     }
-    return {label:`${d.name} (Nivel/Rango ${d.monster.level}, necesita ${d.monster.materials||'materiales'})`, action:()=>chooseMaterialsFor(p,i)};
+    return {label: d.monster.category==='Xyz' ? `${d.name} (Xyz Rango ${d.monster.level} · ${extraSummonRule(d).label})` : `${d.name} (Nivel/Rango ${d.monster.level}, necesita ${d.monster.materials||'materiales'})`, action:()=>chooseMaterialsFor(p,i)};
   }).filter(Boolean);
   if(options.length===0){ alert('No se pudieron cargar las cartas de tu Extra Deck.'); return; }
   openChoiceModal('Elige un monstruo del Extra Deck', options, opt=>opt.action());
 }
 
+/* Regla de materiales de Sincronía / Xyz / Link (las Fusiones van con Polimerización).
+   · Xyz: N monstruos boca arriba del MISMO Nivel que su Rango (o el Nivel que diga su texto: «3 monstruos de Nivel 4»).
+   · Sincronía / Link: 2 monstruos de tu campo (simplificado).
+   Los materiales salen del campo, así que liberan zona: se puede invocar aunque tengas las 5 zonas llenas. */
+function extraSummonRule(def){
+  const m = def.monster||{};
+  if(m.category==='Xyz'){
+    let count = 2, level = m.level||0;
+    let spec = null; try{ spec = parseMaterialSpec(m.materials||''); }catch(e){}
+    const lv = spec && (spec.slots||[]).find(sl=>sl.level);
+    if(lv){ level = lv.level; count = spec.slots.reduce((t,sl)=>t+(sl.count||1),0); }
+    else { const n = /(\d+)\s*monstruo/i.exec(m.materials||''); if(n && +n[1]>=2 && +n[1]<=5) count = +n[1]; }
+    return { count, level, faceupOnly:true, label:`${count} monstruos de Nivel ${level} boca arriba`, ok: d=> d && d.monster && (d.monster.level||0)===level };
+  }
+  return { count:2, level:null, faceupOnly:false, label:'2 monstruos de tu campo', ok: ()=>true };
+}
 function chooseMaterialsFor(p, extraIdx){
   const def = findCardDef(p.extra[extraIdx]);
   if(!def) return;
-  const needed = 2;
-  const zoneIdx = p.monsterZones.findIndex(z=>z===null);
-  if(zoneIdx===-1){ alert('No tienes zonas de monstruo libres.'); return; }
+  const rule = extraSummonRule(def), needed = rule.count;
   const matKind = {'Fusión':'fusion','Sincronía':'synchro','Xyz':'xyz','Link':'link'}[def.monster.category] || 'fusion';
-  const fieldOwned = p.monsterZones.map((z,i)=> (z && canUseAsMaterial(z.cardId, matKind)) ? {type:'field',i}:null).filter(Boolean);
-  if(fieldOwned.length < needed){ alert(`Necesitas al menos ${needed} monstruos en el campo que puedan usarse como material de ${def.monster.category} (simplificado; los Tokens sin ese permiso no cuentan).`); return; }
+  const fieldOwned = p.monsterZones.map((z,i)=>{
+    if(!z || !canUseAsMaterial(z.cardId, matKind)) return null;
+    if(rule.faceupOnly && !z.faceup) return null;
+    return rule.ok(findCardDef(z.cardId)) ? {type:'field', i} : null;
+  }).filter(Boolean);
+  if(fieldOwned.length < needed){
+    alert(def.monster.category==='Xyz'
+      ? `${def.name} es Xyz de Rango ${rule.level}: necesitas ${rule.label} en tu campo (tienes ${fieldOwned.length}).`
+      : `Necesitas al menos ${needed} monstruos en el campo que puedan usarse como material de ${def.monster.category} (los Tokens sin ese permiso no cuentan).`);
+    return;
+  }
   let selected = [];
-  const options = fieldOwned.map(o=>({label:'Campo: '+(findCardDef(p.monsterZones[o.i].cardId)||{name:'???'}).name, o}));
+  const options = fieldOwned.map(o=>{ const z = p.monsterZones[o.i], d = findCardDef(z.cardId)||{name:'???',monster:{}}; return {label:`Campo: ${z.faceup ? d.name : 'carta boca abajo'}${d.monster && d.monster.level ? ` (Nv ${d.monster.level})` : ''}`, o}; });
   const root = document.getElementById('modalRoot');
   const overlay = document.createElement('div'); overlay.className='overlay';
-  overlay.innerHTML = `<div class="modal"><button class="close-x">✕</button><h3>Selecciona ${needed} materiales para ${def.name}</h3><div class="choice-grid" id="matGrid"></div><button class="btn good" id="matConfirm" disabled>Invocar</button></div>`;
+  overlay.innerHTML = `<div class="modal"><button class="close-x">✕</button><h3>Selecciona ${needed} materiales para ${escapeHtml(def.name)}</h3><div class="hint" style="margin-bottom:6px;">Requisito: ${escapeHtml(rule.label)}. Los materiales salen de tu campo, así que no importa si tienes las 5 zonas ocupadas.</div><div class="choice-grid" id="matGrid"></div><button class="btn good" id="matConfirm" disabled>Invocar</button></div>`;
   root.innerHTML=''; root.appendChild(overlay);
   const grid = overlay.querySelector('#matGrid');
   options.forEach(opt=>{
@@ -8266,11 +8367,12 @@ function chooseMaterialsFor(p, extraIdx){
     grid.appendChild(b);
   });
   overlay.querySelector('#matConfirm').onclick = ()=>{
+    if(selected.length!==needed || !selected.every(i=>p.monsterZones[i])){ overlay.remove(); return; }
     selected.forEach(i=>{ const mid = p.monsterZones[i].cardId; handleEquipCleanupOnLeave(p, i); p.monsterZones[i]=null; sendToGY(p, mid); });
     const zi = p.monsterZones.findIndex(z=>z===null);
     p.monsterZones[zi] = emptyMonsterState(def.id,'attack',true);
     p.extra.splice(extraIdx,1);
-    logMsg(`¡Invocación especial! ${def.name} sale del Extra Deck usando ${needed} materiales.`);
+    logMsg(`¡Invocación ${def.monster.category==='Xyz'?'Xyz':def.monster.category==='Sincronía'?'por Sincronía':def.monster.category==='Link'?'Link':'especial'}! ${def.name} sale del Extra Deck usando ${needed} materiales.`);
     overlay.remove();
     applySummonTrigger(p, def);
     renderDuel();
@@ -8862,6 +8964,7 @@ function renderZoneRow(elId, owner, kind){
         }
       }
       if(kind==='monster' && owner._waboku) div.classList.add('waboku-aura');
+      if(kind==='st' && z.faceup && z.swordsTurns>0 && isSwordsDef(findCardDef(z.cardId))) html += `<div class="zone-badge" title="Turnos del rival sin atacar">🗡️ ${z.swordsTurns}</div>`;
       div.innerHTML = html;
       div.addEventListener('click', ()=> kind==='monster' ? onFieldMonsterClick(owner, idx) : onFieldSTClick(owner, idx));
     }
@@ -9179,6 +9282,39 @@ function ritualExodiaFuncs(p, opp, def, info, func, onDone){
         }, {allowSkip: taken>0, skipLabel:'Terminar', score: c=> isVictoryPieceDef(c) ? 100000 : ((c.monster||{}).atk||0)});
       };
       step();
+      return true;
+    }
+    case 'enchantedJavelin': {
+      const pa = duel._pendingAttack;
+      const az = pa && pa.attackerOwner && pa.attackerOwner.monsterZones[pa.attackerIdx];
+      if(!pa || !az || pa.attackerOwner===p){ logMsg(`🗡️ ${def.name} solo tiene efecto cuando un monstruo del rival te ataca.`); onDone(); return true; }
+      const amt = atkVal(az);
+      p.lp += amt; try{ BattleFX.lpChange(fxOwnerKey(p), -amt); fxBigNumber('+'+amt, '#7dffa0'); }catch(e){}
+      logMsg(`🗡️ ${def.name}: ${p===duel.player?'ganas':'tu rival gana'} ${amt} LP (el ATK de "${fxZoneLabel(az)}"). El ataque continúa.`);
+      renderDuel(); onDone(); return true;
+    }
+    case 'shiftTarget': {
+      const pa = duel._pendingAttack;
+      if(!pa || pa.attackerOwner===p || pa.defenderIdx===null || pa.defenderIdx===undefined || !p.monsterZones[pa.defenderIdx]){
+        logMsg(`🔀 ${def.name} solo funciona cuando el rival ataca a uno de tus monstruos.`); onDone(); return true;
+      }
+      const idxs = p.monsterZones.map((z,i)=> z && i!==pa.defenderIdx ? i : null).filter(i=>i!==null);
+      if(!idxs.length){ logMsg(`🔀 ${def.name}: no tienes otro monstruo al cual desviar el ataque.`); onDone(); return true; }
+      const apply = (i)=>{
+        if(i===null || i===undefined || !p.monsterZones[i]){ onDone(); return; }
+        const before = p.monsterZones[pa.defenderIdx];
+        pa.defenderIdx = i;
+        logMsg(`🔀 ${def.name}: el ataque se desvía de "${before?fxZoneLabel(before):'?'}" a "${fxZoneLabel(p.monsterZones[i])}".`);
+        try{ BattleFX.activateTrap && fxSpawnAtZone(fxOwnerKey(p), i, 'fx-counter-burst'); }catch(e){}
+        renderDuel(); onDone();
+      };
+      if(p.isAI || p!==duel.player || sbAutoPick){
+        // La IA elige al monstruo que mejor aguanta el golpe.
+        const atkr = pa.attackerOwner.monsterZones[pa.attackerIdx], a = atkr ? atkVal(atkr) : 0;
+        const score = i=>{ const z = p.monsterZones[i], d = findCardDef(z.cardId); const stat = z.position==='attack' ? atkVal(z) : defVal(z); return (monNoBD(d, p) ? 100000 : 0) + (stat>=a ? 50000 : 0) + stat; };
+        apply(idxs.slice().sort((x,y)=>score(y)-score(x))[0]); return true;
+      }
+      openCriticalChoiceModal(`🔀 ${def.name}: ¿a cuál de tus monstruos desvías el ataque?`, idxs.map(i=>({label:`${fxZoneLabel(p.monsterZones[i])} (zona ${i+1})`, i})), o=>apply(o.i), ()=>apply(null));
       return true;
     }
     case 'waboku': {
@@ -9574,8 +9710,8 @@ function aiMainPhaseActionsCoreST(cont){
 
 function aiBattlePhase(cont){
   const ai = duel.ai;
-  if(ai.swordsLockTurns && ai.swordsLockTurns>0){
-    logMsg(`🗡️ La IA no puede atacar por Espadas Reveladoras (le quedan ${ai.swordsLockTurns} turno(s)).`);
+  if(swordsLockOn(ai)>0){
+    logMsg(`🗡️ La IA no puede atacar por Espadas Reveladoras (le quedan ${swordsLockOn(ai)} turno(s)).`);
     cont(); return;
   }
   const attackers = ai.monsterZones.map((z,i)=>z && z.faceup && z.position==='attack' && !z.justFlipSummoned ? i : null).filter(i=>i!==null);
@@ -9700,6 +9836,49 @@ function wireDataChannel(dc){
   }, 4000);
 }
 
+/* ---- Código de conexión compacto ----
+   Antes: btoa(encodeURIComponent(JSON)) -> cada espacio y salto de línea del SDP se volvía %20/%0D%0A y el
+   código salía de 6-10 KB: el QR quedaba tan denso que la cámara casi nunca lo leía.
+   Ahora: se quitan candidatos que no hacen falta (IPv6, repetidos), se comprime (deflate) y se codifica en
+   base64url. Queda 4-6 veces más corto. Se siguen aceptando los códigos del formato anterior. */
+function slimSdp(sdp){
+  const lines = String(sdp||'').split(/\r?\n/).filter(Boolean);
+  const out = []; const seen = new Set(); const count = {host:0, srflx:0, relay:0, prflx:0};
+  const max = {host:3, srflx:3, relay:4, prflx:2};
+  for(const l of lines){
+    if(l.startsWith('a=candidate:')){
+      const f = l.split(' '); const addr = f[4]||'', port = f[5]||'', typ = f[7]||'host';
+      if(addr.includes(':')) continue;                       // IPv6: casi nunca se usa en celulares
+      const key = addr+':'+port+':'+typ+':'+(f[2]||'');
+      if(seen.has(key)) continue; seen.add(key);
+      if((count[typ]||0) >= (max[typ]||2)) continue; count[typ] = (count[typ]||0)+1;
+    }
+    if(l.startsWith('a=extmap-allow-mixed') || l.startsWith('a=msid-semantic')) continue;
+    out.push(l);
+  }
+  return out.join('\n');
+}
+function b64urlEncode(bytes){ let s=''; for(let i=0;i<bytes.length;i++) s+=String.fromCharCode(bytes[i]); return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+function b64urlDecode(str){ str=str.replace(/-/g,'+').replace(/_/g,'/'); while(str.length%4) str+='='; const bin=atob(str); const out=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i); return out; }
+async function streamBytes(bytes, stream){ const blob = new Blob([bytes]).stream().pipeThrough(stream); return new Uint8Array(await new Response(blob).arrayBuffer()); }
+async function packSignal(desc){
+  const raw = (desc.type==='offer'?'o':'a') + slimSdp(desc.sdp);
+  const bytes = new TextEncoder().encode(raw);
+  if(typeof CompressionStream!=='undefined'){
+    try{ return 'D1' + b64urlEncode(await streamBytes(bytes, new CompressionStream('deflate'))); }catch(e){}
+  }
+  return 'U1' + b64urlEncode(bytes);
+}
+async function unpackSignal(text){
+  const t = String(text||'').replace(/\s+/g,'');
+  if(t.startsWith('D1') || t.startsWith('U1')){
+    let bytes = b64urlDecode(t.slice(2));
+    if(t.startsWith('D1')) bytes = await streamBytes(bytes, new DecompressionStream('deflate'));
+    const raw = new TextDecoder().decode(bytes);
+    return { type: raw[0]==='o' ? 'offer' : 'answer', sdp: raw.slice(1).split('\n').join('\r\n') + '\r\n' };
+  }
+  return JSON.parse(decodeURIComponent(atob(t)));   // formato anterior
+}
 document.getElementById('mpCreateBtn').addEventListener('click', async ()=>{
   try{
     netState.role='host';
@@ -9711,7 +9890,7 @@ document.getElementById('mpCreateBtn').addEventListener('click', async ()=>{
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     await waitIceComplete(pc);
-    document.getElementById('mpOfferOut').value = btoa(encodeURIComponent(JSON.stringify(pc.localDescription)));
+    document.getElementById('mpOfferOut').value = await packSignal(pc.localDescription);
     document.getElementById('mpIntroPanel').style.display='none';
     document.getElementById('mpHostPanel').style.display='block';
   }catch(err){ alert('No se pudo crear la sala. Tu navegador podría no soportar WebRTC aquí. Prueba con Google Chrome.'); }
@@ -9727,7 +9906,7 @@ document.getElementById('mpGenAnswerBtn').addEventListener('click', async ()=>{
   try{
     const raw = document.getElementById('mpOfferIn').value.replace(/\s+/g,'');
     if(!raw){ alert('Pega primero el Código A que te envió tu amigo.'); return; }
-    const offer = JSON.parse(decodeURIComponent(atob(raw)));
+    const offer = await unpackSignal(raw);
     const pc = new RTCPeerConnection(iceServersConfig());
     netState.pc = pc;
     watchConnectionHealth(pc, 'mpGuestStatus');
@@ -9736,7 +9915,7 @@ document.getElementById('mpGenAnswerBtn').addEventListener('click', async ()=>{
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     await waitIceComplete(pc);
-    document.getElementById('mpAnswerOut').value = btoa(encodeURIComponent(JSON.stringify(pc.localDescription)));
+    document.getElementById('mpAnswerOut').value = await packSignal(pc.localDescription);
     document.getElementById('mpGuestStep2').style.display='block';
     document.getElementById('mpGuestStatus').textContent = 'Esperando a que tu amigo pegue este código y toque "Conectar"...';
   }catch(err){ alert('El código pegado no es válido, o hay un problema de conexión. Revísalo e intenta de nuevo (asegúrate de copiarlo completo, sin espacios de más).'); }
@@ -9746,7 +9925,7 @@ document.getElementById('mpHostConnectBtn').addEventListener('click', async ()=>
   try{
     const raw = document.getElementById('mpAnswerIn').value.replace(/\s+/g,'');
     if(!raw){ alert('Pega primero el Código B que te envió tu amigo.'); return; }
-    const answer = JSON.parse(decodeURIComponent(atob(raw)));
+    const answer = await unpackSignal(raw);
     await netState.pc.setRemoteDescription(answer);
     document.getElementById('mpHostStatus').textContent = '🔄 Conectando...';
     document.getElementById('mpHostStatus').style.color = '';
@@ -9770,7 +9949,14 @@ function fxShowQr(textareaId, boxId){
   box.innerHTML='';
   box.style.display='block';
   try{
-    new QRCode(box, { text, width:260, height:260, correctLevel: QRCode.CorrectLevel.L });
+    const size = Math.max(240, Math.min(420, (window.innerWidth||400) - 60));
+    const holder = document.createElement('div');
+    holder.style.cssText = 'display:inline-block;background:#fff;padding:18px;border-radius:12px;line-height:0;';
+    box.appendChild(holder);
+    new QRCode(holder, { text, width:size, height:size, correctLevel: QRCode.CorrectLevel.L });
+    const tip = document.createElement('div'); tip.className='hint'; tip.style.marginTop='6px';
+    tip.textContent = 'Sube el brillo de esta pantalla. Tu amigo debe ver el QR completo, sin reflejos, a unos 20–30 cm.';
+    box.appendChild(tip);
   }catch(err){
     box.innerHTML = '<div class="hint">No se pudo generar el QR (el código es demasiado largo o hubo un error). Usa "Copiar Código" en su lugar.</div>';
   }
@@ -9780,13 +9966,14 @@ document.getElementById('mpShowQrAnswer').addEventListener('click', ()=>fxShowQr
 
 let mpQrScanState = { stream:null, rafId:null, targetTextareaId:null };
 function fxStopQrScan(){
-  if(mpQrScanState.rafId) cancelAnimationFrame(mpQrScanState.rafId);
+  if(mpQrScanState.rafId){ cancelAnimationFrame(mpQrScanState.rafId); clearTimeout(mpQrScanState.rafId); }
   if(mpQrScanState.stream){ mpQrScanState.stream.getTracks().forEach(t=>t.stop()); }
   mpQrScanState = { stream:null, rafId:null, targetTextareaId:null };
   document.getElementById('mpQrScanOverlay').style.display='none';
 }
 async function fxStartQrScan(targetTextareaId){
-  if(typeof jsQR==='undefined'){
+  const hasNative = typeof BarcodeDetector!=='undefined';
+  if(!hasNative && typeof jsQR==='undefined'){
     alert('No se pudo cargar la librería para leer códigos QR (probablemente no hay conexión a internet en este momento). Pega el código manualmente en su lugar.');
     return;
   }
@@ -9801,33 +9988,53 @@ async function fxStartQrScan(targetTextareaId){
   overlay.style.display='flex';
   statusEl.textContent = 'Pidiendo permiso de cámara...';
   try{
-    const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' } });
+    let stream;
+    try{ stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} } }); }
+    catch(e){ stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' } }); }
     mpQrScanState.stream = stream;
+    try{ const tr = stream.getVideoTracks()[0]; const caps = tr.getCapabilities ? tr.getCapabilities() : {}; if(caps.focusMode && caps.focusMode.includes('continuous')) await tr.applyConstraints({ advanced:[{ focusMode:'continuous' }] }); }catch(e){}
     video.srcObject = stream;
     await video.play();
-    statusEl.textContent = 'Buscando el código QR...';
+    statusEl.textContent = 'Buscando el código QR... acerca o aleja un poco el celular hasta que se vea completo.';
+    let detector = null;
+    if(hasNative){ try{ const fm = await BarcodeDetector.getSupportedFormats(); if(fm.includes('qr_code')) detector = new BarcodeDetector({ formats:['qr_code'] }); }catch(e){} }
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently:true });
-    const tick = ()=>{
-      if(!mpQrScanState.stream) return; // se canceló
-      if(video.readyState===video.HAVE_ENOUGH_DATA){
-        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        let imgData;
-        try{ imgData = ctx.getImageData(0,0,canvas.width,canvas.height); }catch(e){ imgData=null; }
-        if(imgData){
-          const code = jsQR(imgData.data, imgData.width, imgData.height);
-          if(code && code.data){
-            document.getElementById(mpQrScanState.targetTextareaId).value = code.data;
-            statusEl.textContent = '✅ ¡Código leído!';
-            fxStopQrScan();
-            return;
-          }
-        }
-      }
-      mpQrScanState.rafId = requestAnimationFrame(tick);
+    let tries = 0, busy = false;
+    const found = (data)=>{
+      const target = mpQrScanState.targetTextareaId;
+      document.getElementById(target).value = data;
+      statusEl.textContent = '✅ ¡Código leído!';
+      fxStopQrScan();
+      // Continúa solo, como si hubieras tocado el botón de siguiente paso.
+      setTimeout(()=>{ const next = target==='mpOfferIn' ? 'mpGenAnswerBtn' : target==='mpAnswerIn' ? 'mpHostConnectBtn' : null; if(next) document.getElementById(next).click(); }, 150);
     };
-    mpQrScanState.rafId = requestAnimationFrame(tick);
+    const tick = async ()=>{
+      if(!mpQrScanState.stream) return; // se canceló
+      if(!busy && video.readyState===video.HAVE_ENOUGH_DATA && video.videoWidth){
+        busy = true; tries++;
+        try{
+          if(detector){
+            const codes = await detector.detect(video);
+            if(codes && codes.length && codes[0].rawValue){ found(codes[0].rawValue); return; }
+          }
+          if(typeof jsQR!=='undefined'){
+            // Cuadro central (donde suele estar el QR), escalado a un tamaño que jsQR procesa rápido.
+            const vw = video.videoWidth, vh = video.videoHeight, side = Math.min(vw, vh) * (tries % 2 ? 0.95 : 0.7);
+            const sx = (vw - side)/2, sy = (vh - side)/2, dim = Math.min(900, Math.round(side));
+            canvas.width = dim; canvas.height = dim;
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(video, sx, sy, side, side, 0, 0, dim, dim);
+            const img = ctx.getImageData(0, 0, dim, dim);
+            const code = jsQR(img.data, dim, dim, { inversionAttempts:'attemptBoth' });
+            if(code && code.data){ found(code.data); return; }
+          }
+        }catch(e){}
+        busy = false;
+      }
+      if(mpQrScanState.stream) mpQrScanState.rafId = setTimeout(tick, 120);
+    };
+    tick();
   }catch(err){
     statusEl.textContent = '';
     fxStopQrScan();
@@ -10248,6 +10455,7 @@ function embedCard(id){
 function sanitizeZone(z){
   if(!z) return null;
   const base = { position:z.position, atkMod:z.atkMod||0, defMod:z.defMod||0, spellCounters:z.spellCounters||0 };
+  if(z.swordsTurns!==undefined && z.swordsTurns!==null) base.swordsTurns = z.swordsTurns;
   if(z.equippedIdx!==undefined && z.equippedIdx!==null){
     base.equippedIdx = z.equippedIdx;
     base.equippedOwnerKey = z.equippedOwnerKey || null;
@@ -10319,6 +10527,7 @@ function applyIncomingSync(side){
     ai.stZones = side.stZones.map(z=>{
       if(!z) return null;
       const out = { cardId: z.faceup?registerNetCard(z.cardData):'HIDDEN', faceup: !!z.faceup, setThisTurn:false };
+      if(z.swordsTurns!==undefined && z.swordsTurns!==null) out.swordsTurns = z.swordsTurns;
       if(z.equippedIdx!==undefined && z.equippedIdx!==null){
         // Lo que para el rival es "player" (su propio monstruo), para mí es "ai", y viceversa.
         out.equippedIdx = z.equippedIdx;
@@ -10366,6 +10575,7 @@ function applyOppMutate(msg){
     renderDuel(); return;
   }
   if(msg.op==='tempAtk'){ const z=p.monsterZones[msg.zoneIdx]; if(z){ z.tempAtk=(z.tempAtk||0)+(msg.delta||0); try{ (msg.delta<0?BattleFX.decreaseATK:BattleFX.increaseATK).call(BattleFX, fxZoneEl('player','monster',msg.zoneIdx)); }catch(e){} } renderDuel(); return; }
+  if(msg.op==='flipAllFaceup'){ swordsFlipAll(p); logMsg('🗡️ ¡Espadas Reveladoras! Tus monstruos boca abajo quedan boca arriba y no podrás atacar mientras sigan en el campo.'); renderDuel(); return; }
   if(msg.op==='attackLock'){ p._roarLock = true; logMsg('🦁 Rugido Amenazante: no puedes declarar ataques este turno.'); try{ fxScreenText('🦁 ¡GRRROOAAR!', 'roar'); }catch(e){} renderDuel(); return; }
   if(msg.op==='drawUntil'){ let k = 0; while(p.hand.length<(msg.count||6) && p.deck.length){ drawCard(p); k++; } logMsg(`✨ Robas ${k} carta(s) por un efecto de tu rival (hasta tener ${msg.count||6}).`); renderDuel(); return; }
   if(msg.op==='returnAllST'){ p.stZones.forEach((z,i)=>{ if(z){ p.hand.push(z.cardId); p.stZones[i]=null; } }); if(p.fieldZone){ p.hand.push(p.fieldZone.cardId); p.fieldZone=null; } logMsg('🌊 Tus Mágicas/Trampas regresaron a tu mano.'); renderDuel(); return; }
@@ -10708,6 +10918,7 @@ function SB_TEST_CARDS(){
     M('tomate','Tomate',1400,1100,{},gy('summonAtkLowFromDeck',1500)),
     S('contrato','contractWithExodia'), S('ara','advancedRitualArt'), S('preprep','prePreparationOfRites'), S('santidad','cardOfSanctity'), S('buscapieza','searchVictoryPiece'),
     TR('waboku','waboku'), TR('rugido','threateningRoar'), TR('refuerzo','backupSoldier'),
+    TR('jabalina','enchantedJavelin'), TR('cambio','shiftTarget'),
   ];
 }
 function sbNewTestDuel(){
@@ -10826,7 +11037,11 @@ function sbBuildTests(){
       ()=>aiAttack(0,0,/Activar/), ()=>eq([P().lp, n(A().monsterZones), n(P().monsterZones)],[8000,0,1])),
     t(M,'Mágica de Equipo (+500 ATK)', ()=>{P().monsterZones[0]=ms('m1');}, ()=>cast('equipo'), ()=>eq(atkVal(P().monsterZones[0]),1500)),
     t(M,'Mágica de Campo (+300 a Guerreros)', ()=>{P().monsterZones[0]=ms('m1');}, ()=>cast('campo'), ()=>eq(atkVal(P().monsterZones[0]),1300)),
-    t(M,'Espadas Reveladoras', ()=>{A().monsterZones[0]=ms('m2','defense',false);}, ()=>cast('swords'), ()=>eq([A().monsterZones[0].faceup,A().swordsLockTurns],[true,3])),
+    t(M,'Espadas Reveladoras', ()=>{A().monsterZones[0]=ms('m2','defense',false);}, ()=>cast('swords'), ()=>eq([A().monsterZones[0].faceup,swordsLockOn(A())],[true,3])),
+    t(M,'Espadas: si las destruyen, el rival vuelve a atacar', ()=>{P().stZones[0]={cardId:T('swords'),faceup:true,setThisTurn:false,swordsTurns:3};}, ()=>{ fxDestroyST(P(),0); }, ()=>eq(swordsLockOn(A()),0)),
+    t(M,'Espadas: se van solas tras 3 turnos del rival', ()=>{P().stZones[0]={cardId:T('swords'),faceup:true,setThisTurn:false,swordsTurns:3};}, ()=>{ for(let k=0;k<3;k++){ swordsTickEndOfTurn(A()); } }, ()=>eq([swordsLockOn(A()),!!P().stZones[0],P().gy.includes(T('swords'))],[0,false,true])),
+    t(TP,'Jabalina Encantada (ganas el ATK del atacante)', ()=>{A().monsterZones[0]=ms('m2'); P().monsterZones[0]=ms('pared','defense'); setST(P(),'jabalina');}, ()=>aiAttack(0,0,/jabalina/), ()=>eq(P().lp,9500)),
+    t(TP,'Cambio de Objetivo (desvía el ataque a otro monstruo)', ()=>{A().monsterZones[0]=ms('m2'); P().monsterZones[0]=ms('m1'); P().monsterZones[1]=ms('tanque'); setST(P(),'cambio');}, async ()=>{ aiAttack(0,0,/cambio/); await sbSleep(1500); }, ()=>eq([names(P().monsterZones),P().lp],[['Soldado','Tanque'],7000])),
     t(TP,'Destruye-Atacante', ()=>{A().monsterZones[0]=ms('m2'); setST(P(),'sakura');}, ()=>aiAttack(0,null,/Activar/), ()=>eq([n(A().monsterZones),P().lp],[0,8000])),
     t(TP,'Anular ataque', ()=>{A().monsterZones[0]=ms('m2'); setST(P(),'muro');}, ()=>aiAttack(0,null,/Activar/), ()=>eq([n(A().monsterZones),P().lp],[1,8000])),
     t(TP,'Cambiar a Defensa al atacante', ()=>{A().monsterZones[0]=ms('m2'); setST(P(),'defensa');}, ()=>aiAttack(0,null,/Activar/), ()=>eq([A().monsterZones[0].position,P().lp],['defense',8000])),
